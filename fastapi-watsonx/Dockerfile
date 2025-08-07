@@ -1,14 +1,11 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM registry.access.redhat.com/ubi8/python-312:1
 
-# Set the working directory in the container
-WORKDIR /app
+COPY requirements.txt requirements.txt
+# Install any needed packages
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only the openapi.py file into the container
-COPY watsonxai-endpoint.py /app/watsonxai-endpoint.py
-
-# Install any needed packages
-RUN pip install --no-cache-dir fastapi uvicorn requests tabulate ibm_watsonx_ai
+COPY watsonxai-endpoint.py /opt/app-root/src/watsonxai-endpoint.py
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
