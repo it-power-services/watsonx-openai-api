@@ -333,7 +333,6 @@ def convert_watsonx_to_openai_format(watsonx_data):
     openai_models = []
 
     for model in watsonx_data["resources"]:
-        print(model)
         openai_model = {
             "id": model["model_id"],  # Watsonx's model_id maps to OpenAI's id
             "object": "model",  # Hardcoded, as OpenAI uses "model" as the object type
