@@ -697,11 +697,6 @@ async def watsonx_embeddings(body: EmbeddingBody):
     iam_token = get_iam_token()
 
     # Prepare Watsonx.ai request payload
-    if isinstance(body.input, str):
-        input = [body.input]
-    else:
-        input = input
-
     watsonx_payload = {
         "model_id": body.model,
         "inputs": body.input if isinstance(body.input, list) else [body.input],
