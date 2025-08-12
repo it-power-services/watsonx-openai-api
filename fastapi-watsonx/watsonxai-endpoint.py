@@ -91,6 +91,10 @@ WATSONX_URL_CHAT_STREAM = (
     f"{WATSONX_URLS.get(region)}/ml/v1/text/chat_stream?version={api_version}"
 )
 
+WATSONX_URL_EMBEDDINGS = (
+    f"{WATSONX_URLS.get(region)}/ml/v1/text/embeddings?version={api_version}"
+)
+
 if not IBM_API_KEY:
     logger.error(
         "IBM API key is not set. Please set the WATSONX_IAM_APIKEY environment variable."
@@ -128,6 +132,13 @@ class CompletionsBody(BaseModel):
         default=0
     )  # request_data.get("presence_penalty", 0)
     stream: bool = Field(default=False)  # request_data.get("stream", False)
+
+
+class EmbeddingBody(BaseModel):
+    model: str = Field(default="intfloat/multilingual-e5-large")
+    input: str | List[str]
+    encoding_format: Optional[str] = None
+    user: Optional[str] = None
 
 
 # Function to fetch the IAM token
@@ -671,3 +682,80 @@ async def watsonx_chat_completions(body: CompletionsBody):
             )
 
         return watsonx_data
+
+
+# class EmbeddingBody(BaseModel):
+#     model: str = Field(default="intfloat/multilingual-e5-large")
+#     input: str | List[str]
+#     encoding_format: Optional[str] = None
+#     user: Optional[str] = None
+@app.post("/v1/embeddings")
+async def watsonx_embeddings(body: EmbeddingBody):
+    logger.info("Received a Watsonx embedding request.")
+
+    # Get the IAM token
+    iam_token = get_iam_token()
+
+    # Prepare Watsonx.ai request payload
+    if isinstance(body.input, str):
+        input = [body.input]
+    else:
+        input = input
+
+    watsonx_payload = {
+        "model_id": body.model,
+        "inputs": body.input if isinstance(body.input, list) else [body.input],
+        "project_id": PROJECT_ID,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {iam_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        # Send the request to Watsonx.ai
+        response = requests.post(
+            WATSONX_URL_EMBEDDINGS, json=watsonx_payload, headers=headers
+        )
+        response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
+        watsonx_data = response.json()
+        logger.debug(
+            f"Received response from Watsonx.ai: {json.dumps(watsonx_data, indent=4)}"
+        )
+    except requests.exceptions.HTTPError as err:
+        # Capture and log the full response from Watsonx.ai
+        error_message = (
+            response.text
+        )  # Watsonx should return a more detailed error message
+        logger.error(f"HTTPError: {err}, Response: {error_message}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Error from Watsonx.ai: {error_message}",
+        )
+    except requests.exceptions.RequestException as err:
+        # Generic request exception handling
+        logger.error(f"RequestException: {err}")
+        raise HTTPException(status_code=500, detail=f"Error calling Watsonx.ai: {err}")
+
+    # Prepare the OpenAI-compatible response with model name
+
+    openai_response = {
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": result.get("embedding"), "index": idx}
+            for idx, result in enumerate(watsonx_data.get("results"))
+        ],
+        "model": watsonx_data.get("model_id"),
+        "usage": {
+            "prompt_tokens": watsonx_data.get("input_token_count"),
+            "total_tokens": watsonx_data.get("input_token_count"),
+        },
+    }
+
+    # Return the response
+    logger.debug(
+        f"Returning OpenAI-compatible response: {json.dumps(openai_response, indent=4)}"
+    )
+    return openai_response
