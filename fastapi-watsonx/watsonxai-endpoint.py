@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -10,6 +11,7 @@ import httpx
 import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from tabulate import tabulate
 
 app = FastAPI()
@@ -83,7 +85,9 @@ PROJECT_ID = os.getenv("WATSONX_PROJECT_ID")
 
 # Construct Watsonx URLs with the version parameter
 WATSONX_URL = f"{WATSONX_URLS.get(region)}/ml/v1/text/generation?version={api_version}"
-WATSONX_URL_CHAT = (
+WATSONX_URL_CHAT = f"{WATSONX_URLS.get(region)}/ml/v1/text/chat?version={api_version}"
+
+WATSONX_URL_CHAT_STREAM = (
     f"{WATSONX_URLS.get(region)}/ml/v1/text/chat_stream?version={api_version}"
 )
 
@@ -102,6 +106,28 @@ if not PROJECT_ID:
 # Global variables to cache the IAM token and expiration time
 cached_token = None
 token_expiration = 0
+
+
+class CompletionsBody(BaseModel):
+    model: str = Field(default="ibm/granite-3-8b-instruct")
+    max_tokens: int = Field(default=1024)  # request_data.get("max_tokens", 1024)
+    temperature: float = Field(default=1)  # request_data.get("temperature", 1)
+    n: int = Field(default=1)  # request_data.get("n", 1)
+    logit_bias: Optional[Dict] = None  #  request_data.get("logit_bias", None)
+    logprobs: bool = Field(default=False)  # request_data.get("logprobs", False)
+    stop: Optional[List[str]] = None  # request_data.get("stop", None)
+    seed: Optional[int] = None  # request_data.get("seed", None)
+    top_p: float = Field(default=1)  # request_data.get("top_p", 1)
+    messages: List[Dict] = Field(
+        default_factory=list
+    )  # request_data.get("messages", "")
+    frequency_penalty: float = Field(
+        default=0
+    )  # request_data.get("frequency_penalty", 0)
+    presence_penalty: float = Field(
+        default=0
+    )  # request_data.get("presence_penalty", 0)
+    stream: bool = Field(default=False)  # request_data.get("stream", False)
 
 
 # Function to fetch the IAM token
@@ -544,60 +570,34 @@ async def watsonx_completions(request: Request):
 
 
 @app.post("/v1/chat/completions")
-async def watsonx_chat_completions(request: Request):
+async def watsonx_chat_completions(body: CompletionsBody):
     logger.info("Received a Watsonx completion request.")
 
-    # Parse the incoming request as JSON
-    try:
-        request_data = await request.json()
-        logger.debug(f"Received request data: {json.dumps(request_data, indent=4)}")
-    except Exception as e:
-        logger.error(f"Error parsing request: {e}")
-        raise HTTPException(status_code=400, detail="Invalid JSON request body")
-
-    # Rest of the parameters (model_id, max_tokens, etc.)
-    model_id = request_data.get(
-        "model", "ibm/granite-3-8b-instruct"
-    )  # Default model_id
-    max_tokens = request_data.get("max_tokens", 1024)
-    temperature = request_data.get("temperature", 1)
-    n = request_data.get("n", 1)
-    logit_bias = request_data.get("logit_bias", None)
-    logprobs = request_data.get("logprobs", False)
-    stop = request_data.get("stop", None)
-    seed = request_data.get("seed", None)
-    top_p = request_data.get("top_p", 1)
-    messages = request_data.get("messages", "")
-    frequency_penalty = request_data.get("frequency_penalty", 0)
-    presence_penalty = request_data.get("presence_penalty", 0)
-
     # Debugging: Log the provided parameters and their sources
-    logger.debug("Parameter source debug:")
-    logger.debug("\n" + format_debug_output(request_data))
+    # logger.debug("Parameter source debug:")
+    # logger.debug("\n" + format_debug_output(body))
 
     # Get the IAM token
     iam_token = get_iam_token()
 
     # Prepare Watsonx.ai request payload
     watsonx_payload = {
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "frequency_penalty": frequency_penalty,
-        "presence_penalty": presence_penalty,
-        "model_id": model_id,
+        "messages": body.messages,
+        "max_tokens": body.max_tokens,
+        "temperature": body.temperature,
+        "top_p": body.top_p,
+        "frequency_penalty": body.frequency_penalty,
+        "presence_penalty": body.presence_penalty,
+        "model_id": body.model,
         "project_id": PROJECT_ID,
-        "n": n,
-        "seed": seed,
-        "logprobs": logprobs,
+        "n": body.n,
+        "seed": body.seed,
+        "logprobs": body.logprobs,
+        "stop": body.stop,
     }
-
     # Optionally add optional parameters if provided
-    if stop:
-        watsonx_payload["stop"] = stop
-    if logit_bias:
-        watsonx_payload["parameters"]["logit_bias"] = logit_bias
+    if body.logit_bias:
+        watsonx_payload["parameters"]["logit_bias"] = body.logit_bias
 
     # Log the prettified JSON request
     formatted_payload = json.dumps(watsonx_payload, indent=4, ensure_ascii=False)
@@ -609,31 +609,66 @@ async def watsonx_chat_completions(request: Request):
         "Accept": "application/json",
     }
 
-    async def stream_response():
-        async with httpx.AsyncClient(timeout=None) as client:
-            try:
-                async with client.stream(
-                    "POST", WATSONX_URL_CHAT, json=watsonx_payload, headers=headers
-                ) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            logger.debug(f"Streamed line: {line}")
-                            yield f"{line}\n\n"
-            except httpx.HTTPStatusError as err:
-                error_message = (
-                    err.response.text
-                )  # Watsonx should return a more detailed error message
-                logger.error(f"HTTPError: {err}, Response: {error_message}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Error from Watsonx.ai: {error_message}",
-                )
-            except httpx.RequestError as err:
-                # Generic request exception handling
-                logger.error(f"RequestException: {err}")
-                raise HTTPException(
-                    status_code=500, detail=f"Error calling Watsonx.ai: {err}"
-                )
+    if body.stream:
 
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
+        async def stream_response():
+            async with httpx.AsyncClient(timeout=None) as client:
+                try:
+                    async with client.stream(
+                        "POST",
+                        WATSONX_URL_CHAT_STREAM,
+                        json=watsonx_payload,
+                        headers=headers,
+                    ) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if line.strip():
+                                logger.debug(f"Streamed line: {line}")
+                                yield f"{line}\n\n"
+                except httpx.HTTPStatusError as err:
+                    error_message = (
+                        err.response.text
+                    )  # Watsonx should return a more detailed error message
+                    logger.error(f"HTTPError: {err}, Response: {error_message}")
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Error from Watsonx.ai: {error_message}",
+                    )
+                except httpx.RequestError as err:
+                    # Generic request exception handling
+                    logger.error(f"RequestException: {err}")
+                    raise HTTPException(
+                        status_code=500, detail=f"Error calling Watsonx.ai: {err}"
+                    )
+
+        return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+    else:
+        try:
+            # Send the request to Watsonx.ai
+            response = requests.post(
+                WATSONX_URL_CHAT, json=watsonx_payload, headers=headers
+            )
+            response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
+            watsonx_data = response.json()
+            logger.debug(
+                f"Received response from Watsonx.ai: {json.dumps(watsonx_data, indent=4)}"
+            )
+        except requests.exceptions.HTTPError as err:
+            # Capture and log the full response from Watsonx.ai
+            error_message = (
+                response.text
+            )  # Watsonx should return a more detailed error message
+            logger.error(f"HTTPError: {err}, Response: {error_message}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Error from Watsonx.ai: {error_message}",
+            )
+        except requests.exceptions.RequestException as err:
+            # Generic request exception handling
+            logger.error(f"RequestException: {err}")
+            raise HTTPException(
+                status_code=500, detail=f"Error calling Watsonx.ai: {err}"
+            )
+
+        return watsonx_data
