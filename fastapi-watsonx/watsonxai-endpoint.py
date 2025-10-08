@@ -344,6 +344,13 @@ def convert_watsonx_to_openai_format(watsonx_data):
     openai_models = []
 
     for model in watsonx_data["resources"]:
+        model_limits = model.get("model_limits")
+        if model_limits:
+            max_tokens = model_limits.get("max_output_tokens")
+            max_sequence_length = model_limits.get("max_sequence_length")
+        else:
+            max_tokens = None
+            max_sequence_length = None
         openai_model = {
             "id": model["model_id"],  # Watsonx's model_id maps to OpenAI's id
             "object": "model",  # Hardcoded, as OpenAI uses "model" as the object type
@@ -352,16 +359,10 @@ def convert_watsonx_to_openai_format(watsonx_data):
             ),  # Optional: use current timestamp or a fixed one if available
             "owned_by": f"{model['provider']} / {model['source']}",  # Combine Watsonx's provider and source
             "description": f"{model['short_description']} Supports tasks like {', '.join(model.get('task_ids', []))}.",  # Watsonx's short description
-            "max_tokens": model["model_limits"][
-                "max_output_tokens"
-            ],  # Map Watsonx's max_output_tokens to OpenAI's max_tokens
+            "max_tokens": max_tokens,  # Map Watsonx's max_output_tokens to OpenAI's max_tokens
             "token_limits": {
-                "max_sequence_length": model["model_limits"][
-                    "max_sequence_length"
-                ],  # Watsonx's max_sequence_length
-                "max_output_tokens": model["model_limits"][
-                    "max_output_tokens"
-                ],  # Watsonx's max_output_tokens
+                "max_sequence_length": max_sequence_length,  # Watsonx's max_sequence_length
+                "max_output_tokens": max_tokens,  # Watsonx's max_output_tokens
             },
         }
         openai_models.append(openai_model)
